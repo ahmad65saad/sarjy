@@ -1,30 +1,20 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedGoogleCalendar } from "@/lib/googleCalendar";
+import { resolveDate } from "@/app/api/calendar/create/route";
 
-function getLocalDayRange(dateParam?: string): { timeMin: string; timeMax: string } {
-  const normalized = (dateParam ?? "").trim().toLowerCase();
-  const now = new Date();
+async function getLocalDayRange(dateParam?: string): Promise<{ timeMin: string; timeMax: string }> {
+  const dateStr = await resolveDate(dateParam || "tomorrow");
 
-  let dayOffset: number;
-  if (!normalized || normalized === "tomorrow") {
-    dayOffset = 1;
-  } else if (normalized === "today") {
-    dayOffset = 0;
-  } else {
-    throw new Error(
-      "This prototype only supports listing events for today or tomorrow."
-    );
-  }
-
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset, 0, 0, 0, 0);
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset + 1, 0, 0, 0, 0);
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const start = new Date(y, m - 1, d, 0, 0, 0, 0);
+  const end = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
   return { timeMin: start.toISOString(), timeMax: end.toISOString() };
 }
 
 export async function listEventsForDateParam(dateParam?: string): Promise<{
   events: Array<{ id: string; summary: string; start: string; end: string }>;
 }> {
-  const { timeMin, timeMax } = getLocalDayRange(dateParam);
+  const { timeMin, timeMax } = await getLocalDayRange(dateParam);
   const calendar = getAuthenticatedGoogleCalendar();
 
   const res = await calendar.events.list({

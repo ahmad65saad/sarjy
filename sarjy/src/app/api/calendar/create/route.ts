@@ -21,7 +21,7 @@ function pad2(n: number): string {
 
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
-function resolveDate(dateInput: string): string {
+function resolveDateLocal(dateInput: string): string | null {
   const lower = dateInput.trim().toLowerCase();
 
   if (lower === "tomorrow") {
@@ -37,7 +37,6 @@ function resolveDate(dateInput: string): string {
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(lower)) return lower;
 
-  // "next monday", "next friday", etc.
   const nextDay = lower.match(/^next\s+(\w+)$/);
   if (nextDay) {
     const dayIdx = WEEKDAYS.indexOf(nextDay[1]);
@@ -51,24 +50,61 @@ function resolveDate(dateInput: string): string {
     }
   }
 
-  // Strip ordinal suffixes: "26th" → "26", "1st" → "1", "2nd" → "2", "3rd" → "3"
   const cleaned = dateInput.replace(/(\d+)(st|nd|rd|th)\b/gi, "$1");
-
   const parsed = new Date(cleaned);
   if (!isNaN(parsed.getTime())) {
     return `${parsed.getFullYear()}-${pad2(parsed.getMonth() + 1)}-${pad2(parsed.getDate())}`;
   }
 
-  // Last resort: try the original string
   const fallback = new Date(dateInput);
   if (!isNaN(fallback.getTime())) {
     return `${fallback.getFullYear()}-${pad2(fallback.getMonth() + 1)}-${pad2(fallback.getDate())}`;
   }
 
+  return null;
+}
+
+async function aiParseValue(
+  prompt: string,
+  input: string,
+): Promise<string | null> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const { default: OpenAI } = await import("openai");
+    const client = new OpenAI({ apiKey });
+    const res = await client.responses.create({
+      model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
+      instructions: prompt,
+      input: [{ role: "user", content: input }],
+    });
+    const text =
+      typeof (res as { output_text?: unknown }).output_text === "string"
+        ? (res as { output_text: string }).output_text.trim()
+        : "";
+    return text || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveDate(dateInput: string): Promise<string> {
+  const local = resolveDateLocal(dateInput);
+  if (local) return local;
+
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
+  const aiResult = await aiParseValue(
+    `Convert the user's date expression to YYYY-MM-DD format. Today is ${todayStr}. Handle misspellings, shorthand (tmrw, 2moro, tdy, day after tomorrow, etc.), and relative expressions. Return ONLY the date in YYYY-MM-DD format, nothing else.`,
+    dateInput,
+  );
+
+  if (aiResult && /^\d{4}-\d{2}-\d{2}$/.test(aiResult)) return aiResult;
+
   throw new Error(`Could not parse date: "${dateInput}"`);
 }
 
-export function resolveTime(timeInput: string): { hours: number; minutes: number } {
+function resolveTimeLocal(timeInput: string): { hours: number; minutes: number } | null {
   const trimmed = timeInput.trim().toLowerCase();
 
   const match12 = trimmed.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/);
@@ -84,6 +120,23 @@ export function resolveTime(timeInput: string): { hours: number; minutes: number
   const match24 = trimmed.match(/^(\d{1,2}):(\d{2})$/);
   if (match24) {
     return { hours: Number(match24[1]), minutes: Number(match24[2]) };
+  }
+
+  return null;
+}
+
+export async function resolveTime(timeInput: string): Promise<{ hours: number; minutes: number }> {
+  const local = resolveTimeLocal(timeInput);
+  if (local) return local;
+
+  const aiResult = await aiParseValue(
+    'Convert the user\'s time expression to 24-hour HH:MM format. Handle misspellings, shorthand, and natural language (e.g. "noon" = "12:00", "midnight" = "00:00", "3 in the afternoon" = "15:00"). Return ONLY the time in HH:MM format, nothing else.',
+    timeInput,
+  );
+
+  if (aiResult) {
+    const m = aiResult.match(/^(\d{1,2}):(\d{2})$/);
+    if (m) return { hours: Number(m[1]), minutes: Number(m[2]) };
   }
 
   throw new Error(`Could not parse time: "${timeInput}"`);
@@ -123,8 +176,8 @@ export async function createCalendarEvent(body: CreateEventBody): Promise<Create
   if (!date) throw new Error("Missing event date.");
   if (!time) throw new Error("Missing event time.");
 
-  const dateStr = resolveDate(date);
-  const { hours, minutes } = resolveTime(time);
+  const dateStr = await resolveDate(date);
+  const { hours, minutes } = await resolveTime(time);
   const duration = duration_minutes && duration_minutes > 0 ? duration_minutes : 30;
   const { startDT, endDT } = buildDateTimeStrings(dateStr, hours, minutes, duration);
   const timeZone = process.env.TIMEZONE || "Asia/Riyadh";

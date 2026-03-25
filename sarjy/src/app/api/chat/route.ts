@@ -116,6 +116,35 @@ function missingCreateEventFields(action: PendingAction): string[] {
   return missing;
 }
 
+// ── Confirmation classifier via OpenAI ───────────────────────────────
+
+async function classifyConfirmation(message: string): Promise<"yes" | "no" | "cancel" | "unknown"> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return "unknown";
+
+  try {
+    const { default: OpenAI } = await import("openai");
+    const client = new OpenAI({ apiKey });
+
+    const res = await client.responses.create({
+      model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
+      instructions:
+        'The user was asked to confirm scheduling a calendar event. Classify their reply as exactly one of: "yes", "no", or "cancel". "yes" means they agree. "no" means they want a different option. "cancel" means they want to stop entirely (e.g. never mind, forget it, skip, nvm). Return ONLY the single word: yes, no, or cancel.',
+      input: [{ role: "user", content: message }],
+    });
+
+    const outputText =
+      typeof (res as { output_text?: unknown }).output_text === "string"
+        ? (res as { output_text: string }).output_text.trim().toLowerCase()
+        : "";
+
+    if (outputText === "yes" || outputText === "no" || outputText === "cancel") return outputText;
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 // ── Fallback slot extraction via OpenAI ──────────────────────────────
 
 async function extractSlotsFallback(
@@ -163,10 +192,10 @@ async function extractSlotsFallback(
 // ── Preference-aware time helpers ────────────────────────────────────
 
 /** Parse preference values like "after 2 PM", "2 PM", "14:00" into hours/minutes. */
-function parsePreferredTime(pref: string): { hours: number; minutes: number } | null {
+async function parsePreferredTime(pref: string): Promise<{ hours: number; minutes: number } | null> {
   const cleaned = pref.replace(/^(after|before|around|at)\s+/i, "").trim();
   try {
-    return resolveTime(cleaned);
+    return await resolveTime(cleaned);
   } catch {
     return null;
   }
@@ -249,7 +278,7 @@ async function handleCreateEvent(action: PendingAction) {
       );
       const prefValue = timePref?.value ?? null;
       if (prefValue) {
-        const parsed = parsePreferredTime(prefValue);
+        const parsed = await parsePreferredTime(prefValue);
         if (parsed) {
           const { events } = await listEventsForDateParam(action.date);
           const prefDisplay = formatTimeForDisplay(parsed.hours, parsed.minutes);
@@ -301,7 +330,7 @@ async function handleCreateEvent(action: PendingAction) {
   // Check for conflicts before creating (skip if user already confirmed)
   if (!action.awaitingConfirmation) {
     try {
-      const { hours: cH, minutes: cM } = resolveTime(action.time!);
+      const { hours: cH, minutes: cM } = await resolveTime(action.time!);
       const { events } = await listEventsForDateParam(action.date!);
 
       if (isSlotBusy(events, cH, cM, duration)) {
@@ -339,9 +368,9 @@ async function handleCreateEvent(action: PendingAction) {
       duration_minutes: duration,
     });
 
-    const startTime = (() => {
+    const startTime = await (async () => {
       try {
-        const { hours, minutes } = resolveTime(action.time!);
+        const { hours, minutes } = await resolveTime(action.time!);
         return formatTimeForDisplay(hours, minutes);
       } catch {
         return action.time;
@@ -384,14 +413,22 @@ async function handleCheckAvailability(
       if (events.length === 0) {
         return json({ content: `You're free ${date} — nothing on the calendar.`, parsedIntent, pendingAction: updatedPending });
       }
+      const formatEvTime = (v: string) => {
+        if (!v || /^\d{4}-\d{2}-\d{2}$/.test(v)) return "";
+        try { return new Date(v).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); } catch { return ""; }
+      };
+      const lines = events.map((e) => {
+        const t = formatEvTime(e.start);
+        return t ? `• ${t} — ${e.summary}` : `• ${e.summary}`;
+      });
       return json({
-        content: `You have ${events.length} event${events.length === 1 ? "" : "s"} ${date}. You might have a conflict.`,
+        content: `You have ${events.length} event${events.length === 1 ? "" : "s"} ${date}:\n${lines.join("\n")}`,
         parsedIntent,
         pendingAction: updatedPending,
       });
     }
 
-    const { hours: qH, minutes: qM } = resolveTime(timeStr);
+    const { hours: qH, minutes: qM } = await resolveTime(timeStr);
     const queryMinutes = qH * 60 + qM;
 
     const hasOverlap = events.some((e) => {
@@ -496,6 +533,25 @@ export async function POST(req: Request) {
           message,
         );
       }
+
+      // Fallback: regex didn't match — ask OpenAI to classify as yes/no/cancel
+      const verdict = await classifyConfirmation(message);
+      if (verdict === "yes") {
+        const res = await handleCreateEvent({ ...pending, awaitingConfirmation: false });
+        logConversation(message, JSON.parse(await res.clone().text()).content);
+        return res;
+      }
+      if (verdict === "cancel") {
+        return respond(
+          { content: "No worries — I've cancelled that.", parsedIntent, pendingAction: null },
+          message,
+        );
+      }
+      // verdict is "no" or "unknown" — ask for a different time
+      return respond(
+        { content: "No problem — what time works for you?", parsedIntent: { ...pending, awaitingConfirmation: false }, pendingAction: { ...pending, awaitingConfirmation: false, time: undefined } },
+        message,
+      );
     }
 
     // ── Pending create_event draft exists ────────────────────────────
