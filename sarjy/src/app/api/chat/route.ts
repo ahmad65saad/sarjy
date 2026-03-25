@@ -29,6 +29,20 @@ function json(data: unknown, status = 200) {
   });
 }
 
+// ── Preference key normalization ─────────────────────────────────────
+
+const PREF_KEY_MAP: Array<{ pattern: RegExp; canonical: string }> = [
+  { pattern: /duration|length|long|minutes/i, canonical: "default_meeting_duration" },
+  { pattern: /meet.*time|time.*meet|start.*time|prefer.*time|schedul.*time/i, canonical: "preferred_meeting_start_time" },
+];
+
+function normalizePreferenceKey(raw: string): string {
+  for (const { pattern, canonical } of PREF_KEY_MAP) {
+    if (pattern.test(raw)) return canonical;
+  }
+  return raw;
+}
+
 // ── Slot-filling helpers ────────────────────────────────────────────
 
 const SIDE_INTENT_TYPES = new Set([
@@ -48,7 +62,8 @@ function isContinuation(message: string, parsedIntent: ParsedIntent): boolean {
 }
 
 const CONFIRM_YES = /^\s*(yes|yeah|yep|sure|ok|okay|yea|do it|book it|go ahead|confirm|let'?s do it)\s*[.!]?\s*$/i;
-const CONFIRM_NO = /^\s*(no|nah|nope|not really|don'?t|cancel|never\s*mind|different time)\s*[.!]?\s*$/i;
+const CONFIRM_NO = /^\s*(no|nah|nope|not really|different time)\s*[.!]?\s*$/i;
+const CONFIRM_CANCEL = /^\s*(cancel|never\s*mind|forget\s*it|don'?t|stop|nvm)\s*[.!]?\s*$/i;
 
 const RESUME_PATTERN =
   /\b(ok|okay|sure|yeah|yes|then|instead|make it|do it|book it|do|let'?s do|change it to|switch to)\b/i;
@@ -99,6 +114,50 @@ function missingCreateEventFields(action: PendingAction): string[] {
   if (!action.date) missing.push("date");
   if (!action.time) missing.push("time");
   return missing;
+}
+
+// ── Fallback slot extraction via OpenAI ──────────────────────────────
+
+async function extractSlotsFallback(
+  message: string,
+  pending: PendingAction,
+): Promise<{ date?: string; time?: string; duration_minutes?: number } | null> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const { default: OpenAI } = await import("openai");
+    const client = new OpenAI({ apiKey });
+
+    const missing = [
+      !pending.date ? "date" : null,
+      !pending.time ? "time" : null,
+    ].filter(Boolean).join(", ");
+
+    const res = await client.responses.create({
+      model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
+      instructions:
+        `The user is scheduling a calendar event and just replied with additional info. Extract ONLY valid JSON with these fields if present: { date?: string, time?: string, duration_minutes?: number }. For date, normalize to "today" or "tomorrow" or a weekday name. For time, return the full expression like "10 AM" or "4:30 PM". Handle misspellings and shorthand (e.g. "tmrw" = "tomorrow", "tdy" = "today", "2moro" = "tomorrow"). Missing fields from the draft: ${missing}. Return ONLY JSON, no markdown.`,
+      input: [{ role: "user", content: message }],
+    });
+
+    const outputText =
+      typeof (res as { output_text?: unknown }).output_text === "string"
+        ? (res as { output_text: string }).output_text
+        : "";
+
+    if (!outputText.trim()) return null;
+
+    const start = outputText.indexOf("{");
+    const end = outputText.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+
+    const data = JSON.parse(outputText.slice(start, end + 1));
+    const hasFields = data.date || data.time || data.duration_minutes;
+    return hasFields ? data : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Preference-aware time helpers ────────────────────────────────────
@@ -159,14 +218,34 @@ function findNextFreeSlot(
 // ── create_event handler ────────────────────────────────────────────
 
 async function handleCreateEvent(action: PendingAction) {
-  const duration = action.duration_minutes ?? 30;
+  // Fetch preferences once and resolve duration + preferred time from them
+  let allPrefs: Array<{ key: string; value: string }> = [];
+  try {
+    allPrefs = await getPreferences(USER_ID);
+  } catch {
+    // preference lookup failed — continue with defaults
+  }
+
+  let duration = action.duration_minutes;
+  if (!duration) {
+    const durPref = allPrefs.find(
+      (p) => /duration|length/i.test(p.key),
+    );
+    if (durPref) {
+      const m = durPref.value.match(/(\d+)/);
+      if (m) {
+        const parsed = parseInt(m[1], 10);
+        if (parsed > 0) duration = parsed;
+      }
+    }
+  }
+  if (!duration) duration = 30;
 
   // If title + date are present but time is missing, try preference
   if (action.title && action.date && !action.time) {
     try {
-      const allPrefs = await getPreferences(USER_ID);
       const timePref = allPrefs.find(
-        (p) => /meet|time|start|schedul/i.test(p.key),
+        (p) => /meet|time|start|schedul/i.test(p.key) && !/duration|length/i.test(p.key),
       );
       const prefValue = timePref?.value ?? null;
       if (prefValue) {
@@ -177,9 +256,9 @@ async function handleCreateEvent(action: PendingAction) {
           const timeStr = `${parsed.hours > 12 ? parsed.hours - 12 : parsed.hours}${parsed.minutes ? `:${String(parsed.minutes).padStart(2, "0")}` : ""} ${parsed.hours >= 12 ? "PM" : "AM"}`;
 
           if (!isSlotBusy(events, parsed.hours, parsed.minutes, duration)) {
-            const draft = { ...action, time: timeStr, awaitingConfirmation: true };
+            const draft = { ...action, time: timeStr, duration_minutes: duration, awaitingConfirmation: true };
             return json({
-              content: `You prefer meetings ${prefValue.toLowerCase()}. Want me to schedule "${action.title}" for ${action.date} at ${prefDisplay}?`,
+              content: `You prefer meetings ${prefValue.toLowerCase()}. Want me to schedule "${action.title}" for ${action.date} at ${prefDisplay} (${duration} min)?`,
               parsedIntent: draft,
               pendingAction: draft,
             });
@@ -189,9 +268,9 @@ async function handleCreateEvent(action: PendingAction) {
           if (next) {
             const nextDisplay = formatTimeForDisplay(next.hours, next.minutes);
             const nextTimeStr = `${next.hours > 12 ? next.hours - 12 : next.hours}${next.minutes ? `:${String(next.minutes).padStart(2, "0")}` : ""} ${next.hours >= 12 ? "PM" : "AM"}`;
-            const draft = { ...action, time: nextTimeStr, awaitingConfirmation: true };
+            const draft = { ...action, time: nextTimeStr, duration_minutes: duration, awaitingConfirmation: true };
             return json({
-              content: `You prefer meetings ${prefValue.toLowerCase()}, but ${prefDisplay} is busy. The next free slot is ${nextDisplay}. Want me to book it then?`,
+              content: `You prefer meetings ${prefValue.toLowerCase()}, but ${prefDisplay} is busy. The next free slot is ${nextDisplay}. Want me to book it then (${duration} min)?`,
               parsedIntent: draft,
               pendingAction: draft,
             });
@@ -219,12 +298,45 @@ async function handleCreateEvent(action: PendingAction) {
     });
   }
 
+  // Check for conflicts before creating (skip if user already confirmed)
+  if (!action.awaitingConfirmation) {
+    try {
+      const { hours: cH, minutes: cM } = resolveTime(action.time!);
+      const { events } = await listEventsForDateParam(action.date!);
+
+      if (isSlotBusy(events, cH, cM, duration)) {
+        const displayTime = formatTimeForDisplay(cH, cM);
+        const conflicting = events.find((e) => {
+          try {
+            const s = new Date(e.start);
+            const eEnd = new Date(e.end);
+            const evStart = s.getHours() * 60 + s.getMinutes();
+            const evEnd = eEnd.getHours() * 60 + eEnd.getMinutes();
+            const slotStart = cH * 60 + cM;
+            return slotStart < evEnd && (slotStart + duration) > evStart;
+          } catch { return false; }
+        });
+
+        const conflictInfo = conflicting ? ` ("${conflicting.summary}")` : "";
+        const draft = { ...action, duration_minutes: duration, awaitingConfirmation: true };
+
+        return json({
+          content: `Heads up — you have a conflict at ${displayTime} ${action.date}${conflictInfo}. Want me to schedule it anyway, or pick a different time?`,
+          parsedIntent: draft,
+          pendingAction: draft,
+        });
+      }
+    } catch {
+      // availability check failed — proceed with creation
+    }
+  }
+
   try {
     const event = await createCalendarEvent({
       title: action.title,
       date: action.date,
       time: action.time,
-      duration_minutes: action.duration_minutes,
+      duration_minutes: duration,
     });
 
     const startTime = (() => {
@@ -238,7 +350,7 @@ async function handleCreateEvent(action: PendingAction) {
 
     const content = `Done — "${event.summary}" is on your calendar for ${action.date} at ${startTime} (${duration} min).`;
 
-    return json({ content, parsedIntent: action, pendingAction: null });
+    return json({ content, parsedIntent: { ...action, awaitingConfirmation: false }, pendingAction: null });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "unknown error";
     return json({
@@ -361,6 +473,13 @@ export async function POST(req: Request) {
         return res;
       }
 
+      if (CONFIRM_CANCEL.test(message)) {
+        return respond(
+          { content: "No worries — I've cancelled that.", parsedIntent, pendingAction: null },
+          message,
+        );
+      }
+
       if (CONFIRM_NO.test(message) || parsedIntent.time) {
         const draft: PendingAction = {
           ...pending,
@@ -381,9 +500,18 @@ export async function POST(req: Request) {
 
     // ── Pending create_event draft exists ────────────────────────────
     if (pending?.intent === "create_event") {
-      // Short message that fills a missing time slot (e.g. "12pm", "3 pm")
-      if (!pending.time && parsedIntent.time && message.trim().split(/\s+/).length <= 3) {
-        const filled = { ...pending, time: parsedIntent.time, awaitingConfirmation: false };
+      // Short message that fills missing slots (e.g. "tomorrow", "12pm", "tomorrow at 3pm")
+      const isShortFill = message.trim().split(/\s+/).length <= 4;
+      const fillsDate = !pending.date && parsedIntent.date;
+      const fillsTime = !pending.time && parsedIntent.time;
+
+      if (isShortFill && (fillsDate || fillsTime)) {
+        const filled = {
+          ...pending,
+          date: parsedIntent.date ?? pending.date,
+          time: parsedIntent.time ?? pending.time,
+          awaitingConfirmation: false,
+        };
         const res = await handleCreateEvent(filled);
         logConversation(message, JSON.parse(await res.clone().text()).content);
         return res;
@@ -404,6 +532,23 @@ export async function POST(req: Request) {
         logConversation(message, JSON.parse(await res.clone().text()).content);
         return res;
       }
+
+      // Fallback: short message didn't match any slot-fill — ask OpenAI to interpret
+      if (isShortFill && (!pending.date || !pending.time)) {
+        const extracted = await extractSlotsFallback(message, pending);
+        if (extracted) {
+          const filled = {
+            ...pending,
+            date: extracted.date ?? pending.date,
+            time: extracted.time ?? pending.time,
+            duration_minutes: extracted.duration_minutes ?? pending.duration_minutes,
+            awaitingConfirmation: false,
+          };
+          const res = await handleCreateEvent(filled);
+          logConversation(message, JSON.parse(await res.clone().text()).content);
+          return res;
+        }
+      }
     }
 
     // ── check_availability ──────────────────────────────────────────
@@ -416,9 +561,10 @@ export async function POST(req: Request) {
     // ── save_preference ─────────────────────────────────────────────
     if (parsedIntent.intent === "save_preference") {
       if (parsedIntent.preference_key && parsedIntent.preference_value) {
-        const label = parsedIntent.preference_key.replace(/_/g, " ");
+        const normalizedKey = normalizePreferenceKey(parsedIntent.preference_key);
+        const label = normalizedKey.replace(/_/g, " ");
         try {
-          const result = await savePreference(USER_ID, parsedIntent.preference_key, parsedIntent.preference_value);
+          const result = await savePreference(USER_ID, normalizedKey, parsedIntent.preference_value);
 
           const content =
             result.status === "unchanged"
@@ -485,16 +631,13 @@ export async function POST(req: Request) {
           }
         };
 
-        const top = events
-          .slice(0, 5)
-          .map((e) => {
-            const t = formatTime(e.start);
-            return t ? `${t} — ${e.summary}` : e.summary;
-          })
-          .join(", ");
+        const lines = events.map((e) => {
+          const t = formatTime(e.start);
+          return t ? `• ${t} — ${e.summary}` : `• ${e.summary}`;
+        });
 
-        const more = events.length > 5 ? ` (+${events.length - 5} more)` : "";
-        return `You have ${events.length} event${events.length === 1 ? "" : "s"} ${label}: ${top}${more}`;
+        const header = `You have ${events.length} event${events.length === 1 ? "" : "s"} ${label}:`;
+        return `${header}\n${lines.join("\n")}`;
       })();
 
       return respond({ content, parsedIntent, pendingAction: pending ?? null }, message);
@@ -514,8 +657,8 @@ export async function POST(req: Request) {
       return res;
     }
 
-    // ── everything else (static replies for now) ────────────────────
-    const content = (() => {
+    // ── everything else ────────────────────────────────────────────
+    const staticReply = (() => {
       switch (parsedIntent.intent) {
         case "update_event":
           return "Understood — you want to update an event. What should change (what event and what details)?";
@@ -528,13 +671,42 @@ export async function POST(req: Request) {
           return "Sure — you want to set a reminder. When should it trigger and what's the reminder for?";
         case "check_conflict":
           return "Alright — I'll check for scheduling conflicts. What time window should I compare?";
-        case "general_chat":
         default:
-          return "Thanks — I'm listening. What would you like to do?";
+          return null;
       }
     })();
 
-    return respond({ content, parsedIntent, pendingAction: pending ?? null }, message);
+    if (staticReply) {
+      return respond({ content: staticReply, parsedIntent, pendingAction: pending ?? null }, message);
+    }
+
+    // ── general_chat: use OpenAI for a natural reply ──────────────
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (apiKey) {
+      try {
+        const { default: OpenAI } = await import("openai");
+        const client = new OpenAI({ apiKey });
+        const res = await client.responses.create({
+          model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
+          instructions:
+            "You are Sarjy, a friendly and concise voice-first calendar assistant. You can schedule events, list upcoming events, check availability, detect conflicts, and remember user preferences. Keep replies short (1-3 sentences), natural, and helpful. If the user greets you or asks what you can do, briefly introduce your capabilities.",
+          input: [{ role: "user", content: message }],
+        });
+
+        const outputText =
+          typeof (res as { output_text?: unknown }).output_text === "string"
+            ? (res as { output_text: string }).output_text
+            : "";
+
+        if (outputText.trim()) {
+          return respond({ content: outputText.trim(), parsedIntent, pendingAction: pending ?? null }, message);
+        }
+      } catch {
+        // fall through to fallback
+      }
+    }
+
+    return respond({ content: "Hey — I'm Sarjy, your calendar assistant. I can schedule events, check your availability, list what's on your calendar, and remember your preferences. What can I help with?", parsedIntent, pendingAction: pending ?? null }, message);
   } catch {
     return json(
       {

@@ -19,6 +19,8 @@ function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
+const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
 function resolveDate(dateInput: string): string {
   const lower = dateInput.trim().toLowerCase();
 
@@ -35,11 +37,35 @@ function resolveDate(dateInput: string): string {
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(lower)) return lower;
 
-  const parsed = new Date(dateInput);
-  if (isNaN(parsed.getTime())) {
-    throw new Error(`Could not parse date: "${dateInput}"`);
+  // "next monday", "next friday", etc.
+  const nextDay = lower.match(/^next\s+(\w+)$/);
+  if (nextDay) {
+    const dayIdx = WEEKDAYS.indexOf(nextDay[1]);
+    if (dayIdx >= 0) {
+      const d = new Date();
+      const today = d.getDay();
+      let diff = dayIdx - today;
+      if (diff <= 0) diff += 7;
+      d.setDate(d.getDate() + diff);
+      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    }
   }
-  return `${parsed.getFullYear()}-${pad2(parsed.getMonth() + 1)}-${pad2(parsed.getDate())}`;
+
+  // Strip ordinal suffixes: "26th" → "26", "1st" → "1", "2nd" → "2", "3rd" → "3"
+  const cleaned = dateInput.replace(/(\d+)(st|nd|rd|th)\b/gi, "$1");
+
+  const parsed = new Date(cleaned);
+  if (!isNaN(parsed.getTime())) {
+    return `${parsed.getFullYear()}-${pad2(parsed.getMonth() + 1)}-${pad2(parsed.getDate())}`;
+  }
+
+  // Last resort: try the original string
+  const fallback = new Date(dateInput);
+  if (!isNaN(fallback.getTime())) {
+    return `${fallback.getFullYear()}-${pad2(fallback.getMonth() + 1)}-${pad2(fallback.getDate())}`;
+  }
+
+  throw new Error(`Could not parse date: "${dateInput}"`);
 }
 
 export function resolveTime(timeInput: string): { hours: number; minutes: number } {
