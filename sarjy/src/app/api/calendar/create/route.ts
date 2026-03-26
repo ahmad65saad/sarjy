@@ -15,7 +15,7 @@ type CreatedEvent = {
   end: string;
 };
 
-function pad2(n: number): string {
+export function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
@@ -88,9 +88,15 @@ async function aiParseValue(
   }
 }
 
+const _dateCache = new Map<string, string>();
+
 export async function resolveDate(dateInput: string): Promise<string> {
+  const key = dateInput.trim().toLowerCase();
+  const cached = _dateCache.get(key);
+  if (cached) return cached;
+
   const local = resolveDateLocal(dateInput);
-  if (local) return local;
+  if (local) { _dateCache.set(key, local); return local; }
 
   const today = new Date();
   const todayStr = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
@@ -99,7 +105,10 @@ export async function resolveDate(dateInput: string): Promise<string> {
     dateInput,
   );
 
-  if (aiResult && /^\d{4}-\d{2}-\d{2}$/.test(aiResult)) return aiResult;
+  if (aiResult && /^\d{4}-\d{2}-\d{2}$/.test(aiResult)) {
+    _dateCache.set(key, aiResult);
+    return aiResult;
+  }
 
   throw new Error(`Could not parse date: "${dateInput}"`);
 }
@@ -125,9 +134,15 @@ function resolveTimeLocal(timeInput: string): { hours: number; minutes: number }
   return null;
 }
 
+const _timeCache = new Map<string, { hours: number; minutes: number }>();
+
 export async function resolveTime(timeInput: string): Promise<{ hours: number; minutes: number }> {
+  const key = timeInput.trim().toLowerCase();
+  const cached = _timeCache.get(key);
+  if (cached) return cached;
+
   const local = resolveTimeLocal(timeInput);
-  if (local) return local;
+  if (local) { _timeCache.set(key, local); return local; }
 
   const aiResult = await aiParseValue(
     'Convert the user\'s time expression to 24-hour HH:MM format. Handle misspellings, shorthand, and natural language (e.g. "noon" = "12:00", "midnight" = "00:00", "3 in the afternoon" = "15:00"). Return ONLY the time in HH:MM format, nothing else.',
@@ -136,7 +151,11 @@ export async function resolveTime(timeInput: string): Promise<{ hours: number; m
 
   if (aiResult) {
     const m = aiResult.match(/^(\d{1,2}):(\d{2})$/);
-    if (m) return { hours: Number(m[1]), minutes: Number(m[2]) };
+    if (m) {
+      const result = { hours: Number(m[1]), minutes: Number(m[2]) };
+      _timeCache.set(key, result);
+      return result;
+    }
   }
 
   throw new Error(`Could not parse time: "${timeInput}"`);
@@ -160,24 +179,38 @@ function buildDateTimeStrings(
   let endM = minutes + durationMinutes;
   endH += Math.floor(endM / 60);
   endM = endM % 60;
+
+  let endDateStr = dateStr;
   if (endH >= 24) {
-    endH = 23;
-    endM = 59;
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const next = new Date(Date.UTC(y, m - 1, d + 1));
+    endDateStr = `${next.getUTCFullYear()}-${pad2(next.getUTCMonth() + 1)}-${pad2(next.getUTCDate())}`;
+    endH -= 24;
   }
-  const endDT = `${dateStr}T${pad2(endH)}:${pad2(endM)}:00`;
+  const endDT = `${endDateStr}T${pad2(endH)}:${pad2(endM)}:00`;
 
   return { startDT, endDT };
 }
 
-export async function createCalendarEvent(body: CreateEventBody): Promise<CreatedEvent> {
+export type PreResolved = {
+  dateStr: string;
+  hours: number;
+  minutes: number;
+};
+
+export async function createCalendarEvent(
+  body: CreateEventBody,
+  preResolved?: PreResolved,
+): Promise<CreatedEvent> {
   const { title, date, time, duration_minutes } = body;
 
   if (!title) throw new Error("Missing event title.");
-  if (!date) throw new Error("Missing event date.");
-  if (!time) throw new Error("Missing event time.");
+  if (!date && !preResolved) throw new Error("Missing event date.");
+  if (!time && !preResolved) throw new Error("Missing event time.");
 
-  const dateStr = await resolveDate(date);
-  const { hours, minutes } = await resolveTime(time);
+  const dateStr = preResolved?.dateStr ?? await resolveDate(date!);
+  const hours = preResolved?.hours ?? (await resolveTime(time!)).hours;
+  const minutes = preResolved?.minutes ?? (await resolveTime(time!)).minutes;
   const duration = duration_minutes && duration_minutes > 0 ? duration_minutes : 30;
   const { startDT, endDT } = buildDateTimeStrings(dateStr, hours, minutes, duration);
   const timeZone = process.env.TIMEZONE || "Asia/Riyadh";

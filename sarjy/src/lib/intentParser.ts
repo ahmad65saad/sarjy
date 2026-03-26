@@ -7,6 +7,7 @@ type Intent =
   | "create_event"
   | "list_events"
   | "update_event"
+  | "delete_event"
   | "create_reminder"
   | "check_conflict"
   | "check_availability";
@@ -29,6 +30,7 @@ const INTENTS: Intent[] = [
   "create_event",
   "list_events",
   "update_event",
+  "delete_event",
   "create_reminder",
   "check_conflict",
   "check_availability",
@@ -38,12 +40,15 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+const WORD_NUMS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+};
+
 function parseDurationMinutes(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value !== "string") return undefined;
 
   const trimmed = value.trim().toLowerCase();
-  // Accept raw numbers ("30") as well as phrases ("30 minutes").
   const m = trimmed.match(/(\d+)\s*(minutes?|mins?)\b/);
   if (m) return Number(m[1]);
 
@@ -52,6 +57,11 @@ function parseDurationMinutes(value: unknown): number | undefined {
 
   const raw = trimmed.match(/^(\d+)$/);
   if (raw) return Number(raw[1]);
+
+  const wordHour = trimmed.match(/\b(one|two|three|four|five|six)\s*(hours?|hrs?)\b/);
+  if (wordHour && WORD_NUMS[wordHour[1]]) return WORD_NUMS[wordHour[1]] * 60;
+  if (/\bhalf\s+(an?\s+)?hour\b/.test(trimmed)) return 30;
+  if (/\ban?\s+hour\b/.test(trimmed)) return 60;
 
   return undefined;
 }
@@ -154,6 +164,11 @@ function extractDurationMinutesHeuristic(message: string): number | undefined {
   const hours = lower.match(/(\d+)\s*(hours?|hrs?)\b/);
   if (hours) return Number(hours[1]) * 60;
 
+  const wordHour = lower.match(/\b(one|two|three|four|five|six)\s*(hours?|hrs?)\b/);
+  if (wordHour && WORD_NUMS[wordHour[1]]) return WORD_NUMS[wordHour[1]] * 60;
+  if (/\bhalf\s+(an?\s+)?hour\b/.test(lower)) return 30;
+  if (/\ban?\s+hour\b/.test(lower)) return 60;
+
   return undefined;
 }
 
@@ -207,9 +222,16 @@ function heuristicParse(message: string): ParsedIntent {
     /\b(remember|i\s*prefer|prefer|set\s*a\s*preference|preference)\b/i.test(lower);
   const hasGetPreferences = /\b(get|show|what are)\b.*\bpreferences?\b/i.test(lower);
   const hasList = /\b(what do i have|what's on|show (me )?events|list events|my events)\b/i.test(lower);
+  const hasDelete =
+    /\b(delete|remove|cancel|drop|get rid of)\b.*\b(event|meeting|call|sync|it|that)\b/i.test(lower) ||
+    /\b(delete|remove|cancel)\s+(it|that|this)\b/i.test(lower) ||
+    /\bremove\s+(it\s+)?from\s+(my\s+)?calendar\b/i.test(lower);
+  const hasUpdate =
+    /\b(update|change|reschedule|modify|move)\b.*\b(event|meeting|call|sync|it|that)\b/i.test(lower) ||
+    /\bmake\s+(it|that|the\s+(meeting|event|call))\b/i.test(lower) ||
+    /\bactually\b.*\b(change|make|move|update)\b/i.test(lower);
   const hasCreate =
     /\b(schedule|set up|book|create|make)\b.*\b(meeting|call|event)\b/i.test(lower);
-  const hasUpdate = /\b(update|change|reschedule|modify)\b.*\b(event|meeting)\b/i.test(lower);
   const hasReminder = /\b(remind me|set a reminder|create a reminder)\b/i.test(lower);
   const hasConflict = /\b(conflict|double[-\s]?book|overlap)\b/i.test(lower);
 
@@ -257,9 +279,18 @@ function heuristicParse(message: string): ParsedIntent {
     return { intent: "list_events", date, original_message };
   }
 
-  if (hasCreate) {
+  if (hasDelete) {
     return {
-      intent: "create_event",
+      intent: "delete_event",
+      title,
+      date,
+      original_message,
+    };
+  }
+
+  if (hasUpdate) {
+    return {
+      intent: "update_event",
       title,
       date,
       time,
@@ -268,9 +299,9 @@ function heuristicParse(message: string): ParsedIntent {
     };
   }
 
-  if (hasUpdate) {
+  if (hasCreate) {
     return {
-      intent: "update_event",
+      intent: "create_event",
       title,
       date,
       time,
@@ -338,7 +369,7 @@ export async function parseIntent(message: string): Promise<ParsedIntent> {
     const response = await client.responses.create({
       model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
       instructions:
-        "You are an intent classification and information-extraction engine for Sarjy, a voice-first calendar assistant. Return ONLY valid JSON (no markdown, no extra text). Aggressively extract any fields the user mentions and copy them verbatim when possible. If you cannot find a field, omit it. IMPORTANT: For the time field, always return the FULL time expression including the hour, such as \"10 AM\", \"4:30 PM\", or \"16:00\". NEVER return only \"AM\" or \"PM\" without the hour number. Messages like \"am I free at 10am tomorrow\" or \"am I available tomorrow\" should be classified as check_availability, NOT create_event. The JSON MUST exactly match this shape: { intent: one of [general_chat, save_preference, get_preferences, create_event, list_events, update_event, create_reminder, check_conflict, check_availability], title?: string, date?: string, time?: string, duration_minutes?: number, preference_key?: string, preference_value?: string, original_message: string }.",
+        "You are an intent classification and information-extraction engine for Sarjy, a voice-first calendar assistant. Return ONLY valid JSON (no markdown, no extra text). Aggressively extract any fields the user mentions and copy them verbatim when possible. If you cannot find a field, omit it. IMPORTANT: For the time field, always return the FULL time expression including the hour, such as \"10 AM\", \"4:30 PM\", or \"16:00\". NEVER return only \"AM\" or \"PM\" without the hour number. Messages like \"am I free at 10am tomorrow\" or \"am I available tomorrow\" should be classified as check_availability, NOT create_event. Messages that reference modifying an existing event should be update_event, NOT create_event. Messages that reference deleting, removing, or cancelling an existing event (e.g. \"delete that meeting\", \"remove it from my calendar\", \"cancel that event\") should be delete_event. Look for references like \"that\", \"the\", \"it\" with event words, or verbs like \"change\", \"update\", \"move\", \"reschedule\", \"make it X\". For duration_minutes, handle word numbers: \"one hour\" = 60, \"two hours\" = 120, \"half hour\" = 30. The JSON MUST exactly match this shape: { intent: one of [general_chat, save_preference, get_preferences, create_event, list_events, update_event, delete_event, create_reminder, check_conflict, check_availability], title?: string, date?: string, time?: string, duration_minutes?: number, preference_key?: string, preference_value?: string, original_message: string }.",
       input: [
         {
           role: "user",

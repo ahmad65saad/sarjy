@@ -1,8 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-
-type ChatMessage = { role: "user" | "assistant"; content: string };
+import { AnimatePresence } from "framer-motion";
+import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
+import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
+import { AppHeader } from "@/components/sarjy/AppHeader";
+import { EmptyState } from "@/components/sarjy/EmptyState";
+import { ChatMessageItem, type ChatMessage } from "@/components/sarjy/ChatMessageItem";
+import { ThinkingIndicator } from "@/components/sarjy/ThinkingIndicator";
+import { Composer } from "@/components/sarjy/Composer";
+import { SettingsDrawer } from "@/components/sarjy/SettingsDrawer";
 
 type PendingAction = {
   intent?: string;
@@ -13,19 +20,72 @@ type PendingAction = {
   awaitingConfirmation?: boolean;
 } | null;
 
+type LastEvent = {
+  id: string;
+  summary: string;
+  start: string;
+  end: string;
+} | null;
+
 export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  const [lastEvent, setLastEvent] = useState<LastEvent>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "graphite">("dark");
+
   const endOfMessagesRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const {
+    isSupported: ttsSupported,
+    voiceEnabled,
+    isSpeaking,
+    voices,
+    voiceName,
+    speak,
+    stopSpeaking,
+    toggleVoice,
+    selectVoice,
+  } = useSpeechSynthesis();
+
+  const speakRef = useRef(speak);
+  speakRef.current = speak;
+
+  const {
+    isSupported: micSupported,
+    micEnabled,
+    isListening,
+    error: micError,
+    toggleMic,
+    pause: pauseMic,
+    resume: resumeMic,
+  } = useSpeechRecognition((text) => {
+    void handleSend(text);
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-sarjy-theme", theme);
+  }, [theme]);
+
+  useEffect(() => {
+    if (isSpeaking) pauseMic();
+    else resumeMic();
+  }, [isSpeaking, pauseMic, resumeMic]);
 
   useEffect(() => {
     endOfMessagesRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!loading) inputRef.current?.focus();
   }, [messages, loading]);
 
-  async function onSend() {
-    const content = input.trim();
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, [isListening]);
+
+  async function handleSend(explicitContent?: string) {
+    const content = (explicitContent ?? input).trim();
     if (!content || loading) return;
 
     const userMessage: ChatMessage = { role: "user", content };
@@ -43,6 +103,7 @@ export default function Home() {
           message: content,
           messages: recentMessages,
           pendingAction,
+          lastEvent,
         }),
       });
 
@@ -59,110 +120,87 @@ export default function Home() {
         setPendingAction(
           data.pendingAction && typeof data.pendingAction === "object"
             ? (data.pendingAction as PendingAction)
-            : null
+            : null,
         );
       }
 
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: assistantContent },
-      ]);
+      if ("lastEvent" in data) {
+        if (data.lastEvent === null) setLastEvent(null);
+        else if (data.lastEvent && typeof data.lastEvent === "object") {
+          setLastEvent(data.lastEvent as LastEvent);
+        }
+      }
+
+      setMessages((prev) => [...prev, { role: "assistant", content: assistantContent }]);
+
+      speakRef.current(assistantContent);
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content:
-            err instanceof Error
-              ? `Sorry — ${err.message}`
-              : "Sorry — something went wrong.",
-        },
-      ]);
+      const errorContent =
+        err instanceof Error ? `Sorry — ${err.message}` : "Sorry — something went wrong.";
+
+      setMessages((prev) => [...prev, { role: "assistant", content: errorContent }]);
+      speakRef.current(errorContent);
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <main className="min-h-screen bg-black text-white flex items-center justify-center p-6">
-      <div className="w-full max-w-3xl rounded-2xl border border-white/10 bg-white/5 p-6 shadow-xl">
-        <div>
-          <h1 className="text-3xl font-bold">Sarjy</h1>
-          <p className="mt-2 text-white/70">
-            Voice-first calendar assistant with reminders, preferences, and
-            conflict detection.
-          </p>
-        </div>
+    <div className="flex min-h-screen flex-col">
+      <AppHeader onOpenSettings={() => setSettingsOpen(true)} calendarConnected />
 
-        <div className="mt-6 h-[420px] rounded-xl border border-white/10 bg-black/30 p-4 overflow-y-auto">
-          {messages.length === 0 ? (
-            <p className="text-white/50">Ask me anything...</p>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {messages.map((m, idx) => {
-                const isUser = m.role === "user";
-                return (
-                  <div
-                    key={`${m.role}-${idx}`}
-                    className={`flex ${isUser ? "justify-end" : "justify-start"}`}
-                  >
-                    <div
-                      className={[
-                        "max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap",
-                        isUser
-                          ? "bg-white text-black"
-                          : "bg-white/10 text-white border border-white/10",
-                      ].join(" ")}
-                    >
-                      {m.content}
-                    </div>
-                  </div>
-                );
-              })}
-
-              {loading ? (
-                <div className="flex justify-start">
-                  <div className="max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed bg-white/10 text-white border border-white/10">
-                    Thinking<span className="inline-block ml-1 animate-pulse">...</span>
-                  </div>
+      <main className="flex flex-1 flex-col px-3 pb-3 pt-4 sm:px-6 sm:pb-6 sm:pt-6">
+        <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col overflow-hidden rounded-3xl border border-[var(--sarjy-border)] bg-[var(--sarjy-surface)] shadow-[var(--sarjy-shadow-soft)] min-h-[min(720px,calc(100dvh-5.5rem))] sm:min-h-[min(780px,calc(100dvh-6rem))]">
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 sm:px-8 sm:py-8">
+              {messages.length === 0 ? (
+                <EmptyState disabled={loading} onPick={(text) => void handleSend(text)} />
+              ) : (
+                <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 pb-4">
+                  <AnimatePresence initial={false}>
+                    {messages.map((m, idx) => (
+                      <ChatMessageItem
+                        key={`${m.role}-${idx}-${m.content.slice(0, 48)}`}
+                        message={m}
+                      />
+                    ))}
+                  </AnimatePresence>
+                  {loading ? <ThinkingIndicator /> : null}
+                  <div ref={endOfMessagesRef} className="h-px shrink-0" aria-hidden />
                 </div>
-              ) : null}
-
-              <div ref={endOfMessagesRef} />
+              )}
             </div>
-          )}
-        </div>
+          </div>
 
-        <form
-          className="mt-4 flex gap-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void onSend();
-          }}
-        >
-          <input
-            className="flex-1 rounded-xl border border-white/10 bg-white/10 px-4 py-3 outline-none placeholder:text-white/50 disabled:opacity-60"
-            placeholder="Type a message..."
+          <Composer
+            inputRef={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            disabled={loading}
+            onChange={setInput}
+            onSubmit={() => void handleSend()}
+            loading={loading}
+            isListening={isListening}
+            micSupported={micSupported}
+            micEnabled={micEnabled}
+            onToggleMic={toggleMic}
+            micError={micError}
+            isSpeaking={isSpeaking}
+            onStopSpeaking={stopSpeaking}
           />
-          <button
-            type="submit"
-            className="rounded-xl bg-white text-black px-4 py-3 font-medium disabled:opacity-60"
-            disabled={loading || !input.trim()}
-          >
-            {loading ? "Sending..." : "Send"}
-          </button>
-          <button
-            type="button"
-            className="rounded-xl border border-white/10 px-4 py-3 disabled:opacity-60"
-            disabled={loading}
-          >
-            Mic
-          </button>
-        </form>
-      </div>
-    </main>
+        </div>
+      </main>
+
+      <SettingsDrawer
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        ttsSupported={ttsSupported}
+        voiceEnabled={voiceEnabled}
+        onToggleVoice={toggleVoice}
+        voices={voices}
+        voiceName={voiceName}
+        onSelectVoice={selectVoice}
+        theme={theme}
+        onThemeChange={setTheme}
+      />
+    </div>
   );
 }

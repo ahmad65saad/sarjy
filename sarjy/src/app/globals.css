@@ -1,26 +1,56 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ── Sarjy design tokens (tweak globally here) ───────────────────────
+   Colors: --sarjy-accent, --sarjy-bg, surfaces, borders
+   Radius:  --sarjy-radius-lg / xl (used via rounded-2xl in components)
+   Spacing: prefer Tailwind gap/padding; max width: max-w-5xl on shell
+──────────────────────────────────────────────────────────────────── */
+
+:root,
+html[data-sarjy-theme="dark"] {
+  --sarjy-bg: #0c0c0e;
+  --sarjy-surface: #121214;
+  --sarjy-elevated: #18181b;
+  --sarjy-border: rgba(255, 255, 255, 0.07);
+  --sarjy-border-strong: rgba(255, 255, 255, 0.12);
+  --sarjy-text: #f4f4f5;
+  --sarjy-muted: #a1a1aa;
+  --sarjy-faint: #71717a;
+  --sarjy-accent: #6b8cff;
+  --sarjy-accent-soft: rgba(107, 140, 255, 0.22);
+  --sarjy-accent-subtle: rgba(107, 140, 255, 0.1);
+  --sarjy-accent-border: rgba(107, 140, 255, 0.35);
+  --sarjy-ring: rgba(107, 140, 255, 0.25);
+  --sarjy-user-bg: #e4e4e7;
+  --sarjy-user-text: #18181b;
+  --sarjy-shadow-soft: 0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+html[data-sarjy-theme="graphite"] {
+  --sarjy-bg: #0f1114;
+  --sarjy-surface: #161a1f;
+  --sarjy-elevated: #1c2229;
+  --sarjy-border: rgba(255, 255, 255, 0.065);
+  --sarjy-border-strong: rgba(255, 255, 255, 0.11);
+  --sarjy-accent: #7c9eff;
+  --sarjy-accent-soft: rgba(124, 158, 255, 0.2);
+  --sarjy-accent-subtle: rgba(124, 158, 255, 0.09);
+  --sarjy-accent-border: rgba(124, 158, 255, 0.32);
+  --sarjy-ring: rgba(124, 158, 255, 0.22);
+  --sarjy-shadow-soft: 0 1px 0 rgba(255, 255, 255, 0.03) inset,
+    0 12px 40px rgba(0, 0, 0, 0.4);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-background: var(--sarjy-bg);
+  --color-foreground: var(--sarjy-text);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--sarjy-bg);
+  color: var(--sarjy-text);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }

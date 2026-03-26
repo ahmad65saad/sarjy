@@ -83,18 +83,3 @@ export async function saveConversationMessage(
 
   if (error) throw new Error(`Failed to save message: ${error.message}`);
 }
-
-export async function getRecentConversation(
-  userId: string,
-  limit = 20,
-): Promise<Array<{ role: string; content: string }>> {
-  const { data, error } = await supabase
-    .from("conversation_history")
-    .select("role, content")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: false })
-    .limit(limit);
-
-  if (error) throw new Error(`Failed to get conversation: ${error.message}`);
-  return (data ?? []).reverse();
-}

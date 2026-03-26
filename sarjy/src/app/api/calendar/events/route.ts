@@ -1,14 +1,19 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedGoogleCalendar } from "@/lib/googleCalendar";
-import { resolveDate } from "@/app/api/calendar/create/route";
+import { resolveDate, pad2 } from "@/app/api/calendar/create/route";
+
+const TZ_OFFSET = process.env.TZ_OFFSET ?? "+03:00";
 
 async function getLocalDayRange(dateParam?: string): Promise<{ timeMin: string; timeMax: string }> {
   const dateStr = await resolveDate(dateParam || "tomorrow");
 
   const [y, m, d] = dateStr.split("-").map(Number);
-  const start = new Date(y, m - 1, d, 0, 0, 0, 0);
-  const end = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
-  return { timeMin: start.toISOString(), timeMax: end.toISOString() };
+  const next = new Date(Date.UTC(y, m - 1, d + 1));
+  const nextDay = `${next.getUTCFullYear()}-${pad2(next.getUTCMonth() + 1)}-${pad2(next.getUTCDate())}`;
+
+  const timeMin = `${dateStr}T00:00:00${TZ_OFFSET}`;
+  const timeMax = `${nextDay}T00:00:00${TZ_OFFSET}`;
+  return { timeMin, timeMax };
 }
 
 export async function listEventsForDateParam(dateParam?: string): Promise<{

@@ -13,7 +13,8 @@ export async function GET(req: Request) {
       );
     }
 
-    const tokenResponse = await oauth2Client.getToken(code);
+    const client = oauth2Client();
+    const tokenResponse = await client.getToken(code);
     const tokens = tokenResponse.tokens;
 
     // Intentionally logged for hackathon/internship prototyping.
