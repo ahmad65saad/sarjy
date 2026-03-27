@@ -104,8 +104,16 @@ src/hooks/                 # useSpeechRecognition, useSpeechSynthesis
 - **`check_conflict`** intent is a light stub; real overlap UX is **`check_availability`** and create-time conflict prompts.
 - **Reminders** are not implemented as Google Reminders—placeholder copy only.
 
+## UI
+
+**Main page:
+![](ui.png)
+
+**Chat example:
+![](chat.png)
+
+
 ## License
 
 project use 
 
-![](ui.png)
