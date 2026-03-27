@@ -21,6 +21,8 @@ type PendingAction = {
   time?: string;
   duration_minutes?: number;
   awaitingConfirmation?: boolean;
+  /** Set when asking "schedule anyway?" after a real calendar conflict; cleared after confirm or new time. */
+  awaitingConflictAck?: boolean;
 };
 
 type LastEvent = { id: string; summary: string; start: string; end: string };
@@ -303,7 +305,10 @@ function findNextFreeSlot(
 
 // ── create_event handler ────────────────────────────────────────────
 
-async function handleCreateEvent(action: PendingAction) {
+async function handleCreateEvent(
+  action: PendingAction,
+  opts?: { skipConflictCheck?: boolean },
+) {
   // Fetch preferences once and resolve duration + preferred time from them
   let allPrefs: Array<{ key: string; value: string }> = [];
   try {
@@ -385,7 +390,12 @@ async function handleCreateEvent(action: PendingAction) {
   }
 
   // Resolve time + fetch events in parallel (both are cached so downstream calls are free)
-  if (!action.awaitingConfirmation && action.time && action.date) {
+  if (
+    !action.awaitingConfirmation &&
+    action.time &&
+    action.date &&
+    !opts?.skipConflictCheck
+  ) {
     try {
       const [timeParsed, eventsResult] = await Promise.all([
         resolveTime(action.time),
@@ -408,7 +418,12 @@ async function handleCreateEvent(action: PendingAction) {
         });
 
         const conflictInfo = conflicting ? ` ("${conflicting.summary}")` : "";
-        const draft = { ...action, duration_minutes: duration, awaitingConfirmation: true };
+        const draft = {
+          ...action,
+          duration_minutes: duration,
+          awaitingConfirmation: true,
+          awaitingConflictAck: true,
+        };
 
         return json({
           content: `Heads up — you have a conflict at ${displayTime} ${action.date}${conflictInfo}. Want me to schedule it anyway, or pick a different time?`,
@@ -844,7 +859,11 @@ export async function POST(req: Request) {
     // ── Awaiting confirmation (preference suggestion) ────────────────
     if (pending?.awaitingConfirmation && pending.intent === "create_event") {
       if (CONFIRM_YES.test(message)) {
-        const res = await handleCreateEvent({ ...pending, awaitingConfirmation: false });
+        const { awaitingConflictAck, ...rest } = pending;
+        const res = await handleCreateEvent(
+          { ...rest, awaitingConfirmation: false },
+          { skipConflictCheck: awaitingConflictAck === true },
+        );
         logConversation(message, JSON.parse(await res.clone().text()).content);
         return res;
       }
@@ -860,6 +879,7 @@ export async function POST(req: Request) {
         const draft: PendingAction = {
           ...pending,
           awaitingConfirmation: false,
+          awaitingConflictAck: false,
           time: parsedIntent.time ?? undefined,
         };
         if (parsedIntent.time) {
@@ -876,7 +896,11 @@ export async function POST(req: Request) {
       // Fallback: regex didn't match — ask OpenAI to classify as yes/no/cancel
       const verdict = await classifyConfirmation(message);
       if (verdict === "yes") {
-        const res = await handleCreateEvent({ ...pending, awaitingConfirmation: false });
+        const { awaitingConflictAck, ...rest } = pending;
+        const res = await handleCreateEvent(
+          { ...rest, awaitingConfirmation: false },
+          { skipConflictCheck: awaitingConflictAck === true },
+        );
         logConversation(message, JSON.parse(await res.clone().text()).content);
         return res;
       }
@@ -888,7 +912,16 @@ export async function POST(req: Request) {
       }
       // verdict is "no" or "unknown" — ask for a different time
       return respond(
-        { content: "No problem — what time works for you?", parsedIntent: { ...pending, awaitingConfirmation: false }, pendingAction: { ...pending, awaitingConfirmation: false, time: undefined } },
+        {
+          content: "No problem — what time works for you?",
+          parsedIntent: { ...pending, awaitingConfirmation: false, awaitingConflictAck: false },
+          pendingAction: {
+            ...pending,
+            awaitingConfirmation: false,
+            awaitingConflictAck: false,
+            time: undefined,
+          },
+        },
         message,
       );
     }

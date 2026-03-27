@@ -18,6 +18,7 @@ type PendingAction = {
   time?: string;
   duration_minutes?: number;
   awaitingConfirmation?: boolean;
+  awaitingConflictAck?: boolean;
 } | null;
 
 type LastEvent = {
