@@ -119,8 +119,3 @@ See `README.md`. **Critical path**: valid `GOOGLE_REFRESH_TOKEN` + `OPENAI_API_K
 | Speech API variance | Document “Chrome + HTTPS”; text always works |
 | Wrong timezone | Set `TIMEZONE` / `TZ_OFFSET` to match the calendar user |
 
----
-
-## 3. Revision history
-
-- Document introduced to match current codebase behavior; update when auth model or context-loading changes.
