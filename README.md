@@ -106,10 +106,10 @@ src/hooks/                 # useSpeechRecognition, useSpeechSynthesis
 
 ## UI
 
-**Main page:
+**Main page:**
 ![](ui.png)
 
-**Chat example:
+**Chat example:**
 ![](chat.png)
 
 
