@@ -106,4 +106,4 @@ src/hooks/                 # useSpeechRecognition, useSpeechSynthesis
 
 ## License
 
-Private / project use unless you add a license.
+Private / project use 
