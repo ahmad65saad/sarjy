@@ -14,7 +14,7 @@ Voice-first assistant for **Google Calendar**: talk or type to create events, ch
 
 ## What it does
 
-- **Voice or text** input; optional TTS for replies (settings).
+- **Voice or text** input; **read-aloud** for replies is **on by default** (toggle in Settings; preference is saved per browser).
 - **Intents** (regex heuristics + OpenAI JSON): create / update / delete events, list events, check availability (with overlap detection), save or list preferences, general chat.
 - **Slot filling** for create: title, date, time, duration; uses saved preferences for default duration and suggested meeting time when missing.
 - **Conflict handling**: warns when a slot is busy; user can confirm **schedule anyway** (skips re-check after confirm).
@@ -37,6 +37,13 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000). Mic needs a **secure context** (localhost or HTTPS).
+
+## Deploy on Vercel & voice on other devices
+
+- Use the **`https://` production URL** only. Mic and speech APIs require a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts); plain `http://` will disable the mic.
+- **Speech recognition** (mic button) is only available in browsers that expose `SpeechRecognition` / `webkitSpeechRecognition` — reliably **Chrome**, **Edge**, and **Samsung Internet** on Android. **Firefox** and **Safari** (including **iPhone**) usually **do not** support it; users should **type** or open the site in Chrome where possible.
+- **Text-to-speech** (read replies aloud) is wider support but **iOS Safari** can stay silent when speech runs right after an async API response. The app calls `speechSynthesis.resume()` and defers playback slightly on iOS; if it still fails, **tap Send once** (user gesture) then try again, or use Settings to confirm **Read replies aloud** is on.
+- Each device/browser has its own **microphone permission** and **localStorage** (voice toggle). A new phone will ask for mic again and uses default read-aloud **on** unless the user previously turned it off on that browser.
 
 ## Environment variables
 
@@ -112,8 +119,6 @@ src/hooks/                 # useSpeechRecognition, useSpeechSynthesis
 **Chat example:**
 ![](chat.png)
 
-
 ## License
 
-project use 
-
+Private / project use unless you add a license.
