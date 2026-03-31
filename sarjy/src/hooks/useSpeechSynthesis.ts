@@ -18,7 +18,13 @@ const PREFERRED_NAMES = [
 const NATURAL_KEYWORDS = ["natural", "enhanced", "premium", "siri"];
 
 const LS_KEY = "sarjy-voice";
+const LS_READ_ALOUD = "sarjy-read-aloud";
 const MIN_CHUNK_LENGTH = 60;
+
+function isLikelyIOS(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /iP(ad|hone|od)/i.test(navigator.userAgent);
+}
 
 // ─── Helpers ───────────────────────────────────────────────
 
@@ -85,7 +91,8 @@ export function splitIntoChunks(text: string): string[] {
 
 export function useSpeechSynthesis() {
   const [isSupported, setIsSupported] = useState(false);
-  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  /** Voice-first default: on; users can turn off in Settings (persisted). */
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [voiceName, setVoiceName] = useState("");
@@ -110,10 +117,14 @@ export function useSpeechSynthesis() {
     return u;
   }
 
-  // Load voices + restore saved choice
+  // Load voices + restore saved choice + read-aloud preference
   useEffect(() => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
     setIsSupported(true);
+
+    const readAloud = localStorage.getItem(LS_READ_ALOUD);
+    if (readAloud === "0") setVoiceEnabled(false);
+    else if (readAloud === "1") setVoiceEnabled(true);
 
     const saved = localStorage.getItem(LS_KEY);
 
@@ -167,27 +178,50 @@ export function useSpeechSynthesis() {
       )
         return;
 
-      window.speechSynthesis.cancel();
       clearSafetyTimer();
 
       const chunks = splitIntoChunks(prepareForSpeech(text));
       if (chunks.length === 0) return;
 
-      setIsSpeaking(true);
-
-      safetyTimerRef.current = setTimeout(() => {
-        window.speechSynthesis.cancel();
-        setIsSpeaking(false);
-      }, 30_000);
-
-      chunks.forEach((chunk, i) => {
-        const u = makeUtterance(chunk);
-        if (i === chunks.length - 1) {
-          u.onend = () => { clearSafetyTimer(); setIsSpeaking(false); };
-          u.onerror = () => { clearSafetyTimer(); setIsSpeaking(false); };
+      const run = () => {
+        try {
+          window.speechSynthesis.resume();
+          window.speechSynthesis.getVoices();
+        } catch {
+          /* noop */
         }
-        window.speechSynthesis.speak(u);
-      });
+        window.speechSynthesis.cancel();
+
+        setIsSpeaking(true);
+
+        safetyTimerRef.current = setTimeout(() => {
+          window.speechSynthesis.cancel();
+          setIsSpeaking(false);
+        }, 30_000);
+
+        chunks.forEach((chunk, i) => {
+          const u = makeUtterance(chunk);
+          if (i === chunks.length - 1) {
+            u.onend = () => {
+              clearSafetyTimer();
+              setIsSpeaking(false);
+            };
+            u.onerror = () => {
+              clearSafetyTimer();
+              setIsSpeaking(false);
+            };
+          }
+          window.speechSynthesis.speak(u);
+        });
+      };
+
+      // iOS Safari often drops speech if cancel/speak run in the same tick as async API replies.
+      if (isLikelyIOS()) {
+        window.speechSynthesis.cancel();
+        setTimeout(run, 80);
+      } else {
+        run();
+      }
     },
     [voiceEnabled]
   );
@@ -202,13 +236,19 @@ export function useSpeechSynthesis() {
 
   const toggleVoice = useCallback(() => {
     setVoiceEnabled((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(LS_READ_ALOUD, next ? "1" : "0");
+      } catch {
+        /* private mode */
+      }
       if (prev) {
         if (typeof window !== "undefined" && "speechSynthesis" in window) {
           window.speechSynthesis.cancel();
         }
         setIsSpeaking(false);
       }
-      return !prev;
+      return next;
     });
   }, []);
 

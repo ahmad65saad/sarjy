@@ -168,7 +168,16 @@ export function SettingsDrawer({
                   Tips
                 </h3>
                 <ul className="mt-3 space-y-2 text-sm text-[var(--sarjy-muted)] leading-relaxed">
-                  <li>Use the mic for hands-free scheduling.</li>
+                  <li>
+                    <strong className="text-[var(--sarjy-text)]">Deployed site:</strong> must be{" "}
+                    <code className="rounded bg-[var(--sarjy-elevated)] px-1 text-xs">https://</code>
+                    . Allow mic when the browser asks.
+                  </li>
+                  <li>
+                    Read-aloud is on by default; turn it off here if a device stays silent (try tapping
+                    Send once first on iOS).
+                  </li>
+                  <li>Use the mic for hands-free scheduling (Chrome/Edge on desktop or Android).</li>
                   <li>Say &ldquo;that meeting&rdquo; to update your last event.</li>
                 </ul>
               </section>

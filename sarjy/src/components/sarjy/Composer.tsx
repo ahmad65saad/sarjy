@@ -45,6 +45,16 @@ export function Composer({
         {micError ? (
           <p className="text-center text-xs text-rose-400/90 sm:text-left">{micError}</p>
         ) : null}
+        {!micSupported && !micError ? (
+          <p className="text-center text-xs leading-relaxed text-[var(--sarjy-muted)] sm:text-left">
+            Voice input needs{" "}
+            <span className="font-medium text-[var(--sarjy-text)]">Chrome</span>,{" "}
+            <span className="font-medium text-[var(--sarjy-text)]">Edge</span>, or{" "}
+            <span className="font-medium text-[var(--sarjy-text)]">Samsung Internet</span>.
+            Firefox and many in-app browsers have no speech recognition — use typing or open in
+            Chrome.
+          </p>
+        ) : null}
         <div className="flex items-stretch gap-2 sm:gap-3">
           <div
             className={[

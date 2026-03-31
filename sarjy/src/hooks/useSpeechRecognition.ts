@@ -39,6 +39,7 @@ type RecognitionCtor = new () => RecognitionInstance;
 
 function getCtor(): RecognitionCtor | null {
   if (typeof window === "undefined") return null;
+  if (!window.isSecureContext) return null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const w = window as any;
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
@@ -61,6 +62,11 @@ export function useSpeechRecognition(onTranscript: (text: string) => void) {
   }, [onTranscript]);
 
   useEffect(() => {
+    if (typeof window !== "undefined" && !window.isSecureContext) {
+      setError("Mic needs HTTPS — use the https:// link (e.g. your Vercel URL).");
+      setIsSupported(false);
+      return;
+    }
     setIsSupported(getCtor() !== null);
   }, []);
 

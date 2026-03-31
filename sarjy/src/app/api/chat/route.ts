@@ -60,6 +60,18 @@ const SIDE_INTENT_TYPES = new Set([
   "delete_event",
 ]);
 
+/** While asking "Want me to schedule…?", these intents are new questions — not a time change for the draft. */
+const INTERRUPTS_PENDING_SCHEDULE_CONFIRM = new Set<ParsedIntent["intent"]>([
+  "check_availability",
+  "list_events",
+  "save_preference",
+  "get_preferences",
+  "delete_event",
+  "update_event",
+  "create_reminder",
+  "check_conflict",
+]);
+
 function isContinuation(message: string, parsedIntent: ParsedIntent): boolean {
   if (SIDE_INTENT_TYPES.has(parsedIntent.intent)) return false;
   if (parsedIntent.intent === "create_event") return true;
@@ -476,7 +488,9 @@ async function handleCreateEvent(
 async function handleCheckAvailability(
   parsedIntent: ParsedIntent,
   pending: PendingAction | undefined,
+  options?: { setLastEventOnConflict?: boolean },
 ) {
+  const setLastEventOnConflict = options?.setLastEventOnConflict !== false;
   const date = parsedIntent.date ?? "tomorrow";
   const timeStr = parsedIntent.time;
 
@@ -530,9 +544,20 @@ async function handleCheckAvailability(
           content,
           parsedIntent,
           pendingAction: updatedPending,
+          ...(setLastEventOnConflict
+            ? {
+                lastEvent: {
+                  id: conflict.id,
+                  summary: conflict.summary || "Event",
+                  start: conflict.start,
+                  end: conflict.end,
+                },
+              }
+            : {}),
           availability: {
             available: false,
             conflict: {
+              id: conflict.id,
               summary: conflict.summary || "Event",
               start: conflict.start,
               end: conflict.end,
@@ -546,9 +571,20 @@ async function handleCheckAvailability(
         content: `You're busy at ${displayTime} ${date} — you have '${title}' on the calendar (${durationText}).`,
         parsedIntent,
         pendingAction: updatedPending,
+        ...(setLastEventOnConflict
+          ? {
+              lastEvent: {
+                id: conflict.id,
+                summary: conflict.summary || "Event",
+                start: conflict.start,
+                end: conflict.end,
+              },
+            }
+          : {}),
         availability: {
           available: false,
           conflict: {
+            id: conflict.id,
             summary: conflict.summary || "Event",
             start: conflict.start,
             end: conflict.end,
@@ -856,8 +892,20 @@ export async function POST(req: Request) {
     const parsedIntent: ParsedIntent = await parseIntent(message);
     const pending = body.pendingAction;
 
+    /** Side questions (availability, etc.) must not run the yes/no/time confirmation branch, but keep the create draft. */
+    const skipAwaitingScheduleConfirm =
+      Boolean(
+        pending?.awaitingConfirmation &&
+          pending.intent === "create_event" &&
+          INTERRUPTS_PENDING_SCHEDULE_CONFIRM.has(parsedIntent.intent),
+      );
+
     // ── Awaiting confirmation (preference suggestion) ────────────────
-    if (pending?.awaitingConfirmation && pending.intent === "create_event") {
+    if (
+      pending?.awaitingConfirmation &&
+      pending.intent === "create_event" &&
+      !skipAwaitingScheduleConfirm
+    ) {
       if (CONFIRM_YES.test(message)) {
         const { awaitingConflictAck, ...rest } = pending;
         const res = await handleCreateEvent(
@@ -988,7 +1036,9 @@ export async function POST(req: Request) {
 
     // ── check_availability ──────────────────────────────────────────
     if (parsedIntent.intent === "check_availability") {
-      const res = await handleCheckAvailability(parsedIntent, pending ?? undefined);
+      const res = await handleCheckAvailability(parsedIntent, pending ?? undefined, {
+        setLastEventOnConflict: pending?.intent !== "create_event",
+      });
       logConversation(message, JSON.parse(await res.clone().text()).content);
       return res;
     }
